@@ -1,14 +1,296 @@
 import { ref, onUnmounted, watch, type Ref } from 'vue'
 import { useSocketStore } from '@/stores/socket'
 import { iceConfig } from '@/config/ice'
-import type { PeerData } from '@/types'
+import type { PeerData, WebRTCStats } from '@/types'
+
+// 🔑 根据分辨率计算合理的最大码率（单位：bps）
+// 4K 60fps: 100-200 Mbps
+// 1080p 60fps: 20-50 Mbps
+// 720p 30fps: 5-10 Mbps
+function calculateMaxBitrate(width: number, height: number, fps: number): number {
+  const pixels = width * height
+  
+  // 4K (>= 3840x2160 = 8.3M pixels)
+  if (pixels >= 8000000) {
+    return fps >= 50 ? 200_000_000 : 100_000_000 // 200 or 100 Mbps
+  }
+  // 1440p (>= 2560x1440 = 3.7M pixels)
+  if (pixels >= 3500000) {
+    return fps >= 50 ? 80_000_000 : 50_000_000 // 80 or 50 Mbps
+  }
+  // 1080p (>= 1920x1080 = 2M pixels)
+  if (pixels >= 2000000) {
+    return fps >= 50 ? 50_000_000 : 25_000_000 // 50 or 25 Mbps
+  }
+  // 720p (>= 1280x720 = 0.9M pixels)
+  if (pixels >= 900000) {
+    return fps >= 50 ? 20_000_000 : 10_000_000 // 20 or 10 Mbps
+  }
+  // 其他
+  return 8_000_000 // 8 Mbps
+}
 
 export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) {
   const socketStore = useSocketStore()
   const peers = ref<Map<string, PeerData>>(new Map())
   const peerConnections = new Map<string, RTCPeerConnection>()
-  // 存储每个连接的 sender，用于后续更新轨道
   const trackSenders = new Map<string, Map<string, RTCRtpSender>>()
+  const isOfferer = new Map<string, boolean>()
+  const isNegotiating = new Map<string, boolean>()
+  
+  // 🔑 是否保持分辨率不降级（默认开启 - 适合高画质需求）
+  const maintainResolution = ref<boolean>(true)
+  
+  // 📊 统计信息相关
+  const lastStatsData = new Map<string, { 
+    timestamp: number
+    bytesReceived: number
+    bytesSent: number
+    packetsReceived: number
+    packetsLost: number
+  }>()
+  let statsInterval: number | null = null
+
+  // 获取单个 Peer 的统计信息
+  const getStatsForPeer = async (peerId: string): Promise<WebRTCStats | null> => {
+    const pc = peerConnections.get(peerId)
+    if (!pc) return null
+
+    try {
+      const stats = await pc.getStats()
+      const result: WebRTCStats = {
+        connectionType: 'unknown',
+        localCandidateType: '',
+        remoteCandidateType: '',
+        inboundBitrate: 0,
+        outboundBitrate: 0,
+        packetsLostPercent: 0,
+        roundTripTime: 0,
+        jitter: 0,
+        framesPerSecond: 0,
+        framesReceived: 0,
+        framesDropped: 0,
+      }
+
+      let currentBytesReceived = 0
+      let currentBytesSent = 0
+      let currentPacketsReceived = 0
+      let currentPacketsLost = 0
+      let activeCandidatePairId = ''
+
+      stats.forEach((report) => {
+        // 获取活跃的候选对
+        if (report.type === 'transport') {
+          activeCandidatePairId = report.selectedCandidatePairId || ''
+        }
+
+        // 候选对信息 - 获取连接类型和 RTT
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          result.roundTripTime = Math.round((report.currentRoundTripTime || 0) * 1000)
+          
+          // 获取本地和远程候选信息
+          const localCandidateId = report.localCandidateId
+          const remoteCandidateId = report.remoteCandidateId
+          
+          stats.forEach((candidateReport) => {
+            if (candidateReport.id === localCandidateId && candidateReport.type === 'local-candidate') {
+              result.localCandidateType = candidateReport.candidateType || ''
+              // 连接类型取决于本地候选类型
+              result.connectionType = candidateReport.candidateType as any || 'unknown'
+            }
+            if (candidateReport.id === remoteCandidateId && candidateReport.type === 'remote-candidate') {
+              result.remoteCandidateType = candidateReport.candidateType || ''
+            }
+          })
+        }
+
+        // 入站 RTP（接收）
+        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+          currentBytesReceived = report.bytesReceived || 0
+          currentPacketsReceived = report.packetsReceived || 0
+          currentPacketsLost = report.packetsLost || 0
+          result.jitter = Math.round((report.jitter || 0) * 1000)
+          result.framesPerSecond = report.framesPerSecond || 0
+          result.framesReceived = report.framesReceived || 0
+          result.framesDropped = report.framesDropped || 0
+        }
+
+        // 出站 RTP（发送）
+        if (report.type === 'outbound-rtp' && report.kind === 'video') {
+          currentBytesSent = report.bytesSent || 0
+        }
+      })
+
+      // 计算比特率（需要与上次数据对比）
+      const lastData = lastStatsData.get(peerId)
+      const now = Date.now()
+      
+      if (lastData) {
+        const timeDiff = (now - lastData.timestamp) / 1000 // 秒
+        if (timeDiff > 0) {
+          result.inboundBitrate = Math.round(((currentBytesReceived - lastData.bytesReceived) * 8) / timeDiff)
+          result.outboundBitrate = Math.round(((currentBytesSent - lastData.bytesSent) * 8) / timeDiff)
+          
+          // 计算丢包率
+          const totalPackets = currentPacketsReceived - lastData.packetsReceived
+          const lostPackets = currentPacketsLost - lastData.packetsLost
+          if (totalPackets > 0) {
+            result.packetsLostPercent = Math.round((lostPackets / (totalPackets + lostPackets)) * 100 * 10) / 10
+          }
+        }
+      }
+
+      // 保存当前数据
+      lastStatsData.set(peerId, {
+        timestamp: now,
+        bytesReceived: currentBytesReceived,
+        bytesSent: currentBytesSent,
+        packetsReceived: currentPacketsReceived,
+        packetsLost: currentPacketsLost,
+      })
+
+      return result
+    } catch (err) {
+      console.error('❌ Get stats error:', err)
+      return null
+    }
+  }
+
+  // 更新所有 Peer 的统计信息
+  const updateAllPeerStats = async (): Promise<void> => {
+    for (const [peerId, peerData] of peers.value) {
+      const stats = await getStatsForPeer(peerId)
+      if (stats) {
+        peerData.stats = stats
+      }
+    }
+    // 触发响应式更新
+    peers.value = new Map(peers.value)
+  }
+
+  // 启动统计信息定时更新
+  const startStatsCollection = (): void => {
+    if (statsInterval) return
+    statsInterval = window.setInterval(updateAllPeerStats, 1000) // 每秒更新
+    console.log('📊 Stats collection started')
+  }
+
+  // 停止统计信息收集
+  const stopStatsCollection = (): void => {
+    if (statsInterval) {
+      clearInterval(statsInterval)
+      statsInterval = null
+      console.log('📊 Stats collection stopped')
+    }
+  }
+
+  // 🔑 核心：设置 sender 的编码参数，强制保持分辨率
+  const applySenderDegradationPreference = async (sender: RTCRtpSender): Promise<void> => {
+    if (!sender.track || sender.track.kind !== 'video') return
+    
+    try {
+      // 1. 设置视频轨道的 contentHint（告诉编码器优先级）
+      // 'detail' = 优先清晰度（降帧率不降分辨率）
+      // 'motion' = 优先流畅（降分辨率不降帧率）
+      if ('contentHint' in sender.track) {
+        (sender.track as any).contentHint = maintainResolution.value ? 'detail' : 'motion'
+        console.log(`🎯 contentHint set to: ${(sender.track as any).contentHint}`)
+      }
+      
+      // 2. 获取编码参数
+      const params = sender.getParameters()
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}]
+      }
+      
+      // 3. 获取当前视频轨道的实际设置
+      const settings = sender.track.getSettings()
+      const width = settings.width || 1920
+      const height = settings.height || 1080
+      const fps = settings.frameRate || 30
+      
+      // 4. 计算合适的码率
+      const maxBitrate = calculateMaxBitrate(width, height, fps)
+      
+      // 5. 设置编码参数
+      for (const encoding of params.encodings) {
+        if (maintainResolution.value) {
+          // 🔒 强制保持分辨率模式
+          (encoding as any).degradationPreference = 'maintain-resolution'
+          encoding.scaleResolutionDownBy = 1 // 绝对不缩放
+          encoding.maxBitrate = maxBitrate
+          (encoding as any).priority = 'high'
+          (encoding as any).networkPriority = 'high'
+        } else {
+          // 允许自动调整
+          (encoding as any).degradationPreference = 'balanced'
+          encoding.scaleResolutionDownBy = 1
+          encoding.maxBitrate = 8_000_000 // 8 Mbps
+        }
+      }
+      
+      await sender.setParameters(params)
+      
+      console.log(`🔒 Video sender configured:`, {
+        resolution: `${width}×${height}@${fps}fps`,
+        maxBitrate: `${(maxBitrate / 1_000_000).toFixed(0)} Mbps`,
+        maintainResolution: maintainResolution.value,
+        degradationPreference: (params.encodings[0] as any).degradationPreference,
+        scaleResolutionDownBy: params.encodings[0].scaleResolutionDownBy,
+      })
+    } catch (err) {
+      console.error('❌ Failed to set sender parameters:', err)
+    }
+  }
+
+  // 更新所有 video sender 的参数
+  const updateAllSendersDegradation = async (): Promise<void> => {
+    const promises: Promise<void>[] = []
+    for (const [, senders] of trackSenders) {
+      const videoSender = senders.get('video')
+      if (videoSender) {
+        promises.push(applySenderDegradationPreference(videoSender))
+      }
+    }
+    await Promise.all(promises)
+  }
+
+  // 切换分辨率保持模式
+  const setMaintainResolution = async (value: boolean): Promise<void> => {
+    maintainResolution.value = value
+    console.log('🔒 Maintain resolution:', value ? '开启（强制保持分辨率）' : '关闭（允许自动调整）')
+    await updateAllSendersDegradation()
+  }
+
+  // 添加本地轨道到 PeerConnection（同步添加，之后设置参数）
+  const addLocalTracksToPC = async (pc: RTCPeerConnection, targetId: string): Promise<void> => {
+    if (!localStream.value) return
+    
+    const senders = trackSenders.get(targetId) || new Map<string, RTCRtpSender>()
+    
+    for (const track of localStream.value.getTracks()) {
+      if (!senders.has(track.kind)) {
+        const sender = pc.addTrack(track, localStream.value)
+        senders.set(track.kind, sender)
+        console.log(`✅ Added ${track.kind} track to PC for: ${targetId}`)
+      }
+    }
+    
+    trackSenders.set(targetId, senders)
+  }
+
+  // 在 SDP 协商完成后设置视频参数（关键时机！）
+  const applyVideoParamsAfterNegotiation = async (targetId: string): Promise<void> => {
+    const senders = trackSenders.get(targetId)
+    if (!senders) return
+    
+    const videoSender = senders.get('video')
+    if (videoSender) {
+      // 稍微延迟，确保协商完全完成
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await applySenderDegradationPreference(videoSender)
+    }
+  }
 
   // 创建 PeerConnection
   const createPeerConnection = (targetId: string, nickname = '用户'): RTCPeerConnection => {
@@ -17,14 +299,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     const pc = new RTCPeerConnection(iceConfig)
     peerConnections.set(targetId, pc)
     trackSenders.set(targetId, new Map())
-
-    // 添加本地流
-    if (localStream.value) {
-      localStream.value.getTracks().forEach(track => {
-        const sender = pc.addTrack(track, localStream.value!)
-        trackSenders.get(targetId)?.set(track.kind, sender)
-      })
-    }
+    isNegotiating.set(targetId, false)
 
     // ICE 候选
     pc.onicecandidate = (event) => {
@@ -41,6 +316,12 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     // ICE 连接状态
     pc.oniceconnectionstatechange = () => {
       console.log(`🔌 ICE state (${targetId}):`, pc.iceConnectionState)
+      
+      // ICE 连接成功后，重新应用视频参数（确保生效）
+      if (pc.iceConnectionState === 'connected') {
+        applyVideoParamsAfterNegotiation(targetId)
+      }
+      
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
         removePeer(targetId)
       }
@@ -51,14 +332,43 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       console.log(`📺 Received track from: ${targetId}, kind: ${event.track.kind}`)
       const peerData = peers.value.get(targetId)
       if (peerData) {
-        peerData.stream = event.streams[0]
+        if (event.streams && event.streams[0]) {
+          peerData.stream = event.streams[0]
+          console.log(`✅ Remote stream tracks: ${event.streams[0].getTracks().map(t => t.kind).join(', ')}`)
+        } else {
+          if (!peerData.stream) {
+            peerData.stream = new MediaStream()
+          }
+          peerData.stream.addTrack(event.track)
+          console.log(`✅ Added remote ${event.track.kind} track to stream`)
+        }
+        
+        // 监听轨道状态
+        event.track.onended = () => console.log(`⚠️ Remote track ended: ${event.track.kind}`)
+        event.track.onmute = () => console.log(`🔇 Remote track muted: ${event.track.kind}`)
+        event.track.onunmute = () => console.log(`🔊 Remote track unmuted: ${event.track.kind}`)
+        
         peers.value = new Map(peers.value)
       }
     }
 
-    // 需要重新协商时（添加新轨道后会触发）
+    // 信令状态
+    pc.onsignalingstatechange = () => {
+      console.log(`📡 Signaling state (${targetId}):`, pc.signalingState)
+      if (pc.signalingState === 'stable') {
+        isNegotiating.set(targetId, false)
+      }
+    }
+
+    // 需要重新协商
     pc.onnegotiationneeded = async () => {
-      console.log(`🔄 Negotiation needed for: ${targetId}`)
+      if (!isOfferer.get(targetId) || isNegotiating.get(targetId)) {
+        return
+      }
+
+      console.log(`🔄 Renegotiation needed for: ${targetId}`)
+      isNegotiating.set(targetId, true)
+
       try {
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -70,6 +380,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
         })
       } catch (err) {
         console.error('❌ Renegotiation error:', err)
+        isNegotiating.set(targetId, false)
       }
     }
 
@@ -88,30 +399,61 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   }
 
   // 更新所有 PeerConnection 的本地轨道
-  const updateAllPeerTracks = async () => {
+  const updateAllPeerTracks = async (): Promise<void> => {
     if (!localStream.value) return
     
     console.log('🔄 Updating tracks for all peers...')
+    console.log('📹 Current local tracks:', localStream.value.getTracks().map(t => `${t.kind}:${t.id.slice(0,8)}`))
     
     for (const [peerId, pc] of peerConnections) {
+      if (pc.connectionState === 'closed') {
+        console.log(`⚠️ PC for ${peerId} is closed, skipping`)
+        continue
+      }
+      
       const senders = trackSenders.get(peerId) || new Map()
+      let needsRenegotiation = false
       
       for (const track of localStream.value.getTracks()) {
         const existingSender = senders.get(track.kind)
         
         if (existingSender) {
-          // 替换现有轨道
+          // 检查 sender 是否还有效
+          const currentTrack = existingSender.track
+          console.log(`🔄 Sender ${track.kind} current track: ${currentTrack?.id?.slice(0,8) || 'none'}, new track: ${track.id.slice(0,8)}`)
+          
           try {
             await existingSender.replaceTrack(track)
             console.log(`✅ Replaced ${track.kind} track for: ${peerId}`)
+            
+            if (track.kind === 'video') {
+              // 延迟设置参数，确保 track 已经生效
+              setTimeout(async () => {
+                await applySenderDegradationPreference(existingSender)
+              }, 200)
+            }
           } catch (err) {
-            console.error(`❌ Replace track error:`, err)
+            console.error(`❌ Replace track error for ${peerId}:`, err)
+            // replaceTrack 失败，尝试重新添加
+            try {
+              pc.getSenders().forEach(s => {
+                if (s.track?.kind === track.kind) {
+                  pc.removeTrack(s)
+                }
+              })
+              const newSender = pc.addTrack(track, localStream.value!)
+              senders.set(track.kind, newSender)
+              needsRenegotiation = true
+              console.log(`✅ Re-added ${track.kind} track for: ${peerId}`)
+            } catch (addErr) {
+              console.error(`❌ Re-add track error:`, addErr)
+            }
           }
         } else {
-          // 添加新轨道
           try {
             const sender = pc.addTrack(track, localStream.value!)
             senders.set(track.kind, sender)
+            needsRenegotiation = true
             console.log(`✅ Added ${track.kind} track for: ${peerId}`)
           } catch (err) {
             console.error(`❌ Add track error:`, err)
@@ -120,10 +462,30 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       }
       
       trackSenders.set(peerId, senders)
+      
+      // 需要重新协商（添加新 track 或 replaceTrack 失败后）
+      if (needsRenegotiation && pc.signalingState === 'stable') {
+        console.log(`🔄 Triggering renegotiation for: ${peerId}`)
+        isOfferer.set(peerId, true)
+        isNegotiating.set(peerId, true)
+        try {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          socketStore.socket?.emit('signal', {
+            type: 'offer',
+            to: peerId,
+            roomId,
+            payload: offer,
+          })
+        } catch (err) {
+          console.error('❌ Renegotiation error:', err)
+          isNegotiating.set(peerId, false)
+        }
+      }
     }
   }
 
-  // 监听本地流变化，更新所有连接
+  // 监听本地流变化
   watch(localStream, (newStream, oldStream) => {
     if (newStream && newStream !== oldStream) {
       console.log('📹 Local stream changed, updating peers...')
@@ -132,8 +494,21 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   })
 
   // 发起呼叫 (创建 Offer)
-  const createOffer = async (targetId: string, nickname = '用户') => {
+  const createOffer = async (targetId: string, nickname = '用户'): Promise<void> => {
+    isOfferer.set(targetId, true)
+    isNegotiating.set(targetId, true)
+    
     const pc = createPeerConnection(targetId, nickname)
+    
+    // 添加本地轨道
+    await addLocalTracksToPC(pc, targetId)
+    
+    // 如果没有本地流，添加 recvonly transceiver
+    if (!localStream.value) {
+      console.log('📡 No local stream, adding recvonly transceivers')
+      pc.addTransceiver('audio', { direction: 'recvonly' })
+      pc.addTransceiver('video', { direction: 'recvonly' })
+    }
     
     try {
       const offer = await pc.createOffer()
@@ -148,18 +523,38 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       console.log(`📤 Offer sent to: ${targetId}`)
     } catch (err) {
       console.error('❌ Create offer error:', err)
+      isNegotiating.set(targetId, false)
     }
   }
 
   // 响应呼叫 (创建 Answer)
-  const handleOffer = async (fromId: string, offer: RTCSessionDescriptionInit) => {
+  const handleOffer = async (fromId: string, offer: RTCSessionDescriptionInit): Promise<void> => {
     let pc = peerConnections.get(fromId)
+    const myId = socketStore.socket?.id || ''
+    
+    // 处理 glare（双方同时发 offer）
+    if (pc && isNegotiating.get(fromId) && isOfferer.get(fromId)) {
+      if (myId > fromId) {
+        console.log(`⏭️ Ignoring offer from ${fromId} (glare resolution: my ID is larger)`)
+        return
+      } else {
+        console.log(`🔄 Yielding to ${fromId} (glare resolution: their ID is larger)`)
+        isOfferer.set(fromId, false)
+      }
+    }
+    
     if (!pc) {
-      pc = createPeerConnection(fromId)
+      isOfferer.set(fromId, false)
+      pc = createPeerConnection(fromId, '用户')
     }
 
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer))
+      
+      // 添加本地轨道
+      await addLocalTracksToPC(pc, fromId)
+      
+      // 创建 answer
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
       
@@ -170,18 +565,24 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
         payload: answer,
       })
       console.log(`📤 Answer sent to: ${fromId}`)
+      
+      // 🔑 关键：在 answer 发送后设置视频参数
+      await applyVideoParamsAfterNegotiation(fromId)
     } catch (err) {
       console.error('❌ Handle offer error:', err)
     }
   }
 
   // 处理 Answer
-  const handleAnswer = async (fromId: string, answer: RTCSessionDescriptionInit) => {
+  const handleAnswer = async (fromId: string, answer: RTCSessionDescriptionInit): Promise<void> => {
     const pc = peerConnections.get(fromId)
     if (pc) {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(answer))
         console.log(`✅ Answer received from: ${fromId}`)
+        
+        // 🔑 关键：在收到 answer 后设置视频参数（SDP 协商完成）
+        await applyVideoParamsAfterNegotiation(fromId)
       } catch (err) {
         console.error('❌ Handle answer error:', err)
       }
@@ -189,7 +590,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   }
 
   // 处理 ICE 候选
-  const handleIceCandidate = async (fromId: string, candidate: RTCIceCandidateInit) => {
+  const handleIceCandidate = async (fromId: string, candidate: RTCIceCandidateInit): Promise<void> => {
     const pc = peerConnections.get(fromId)
     if (pc) {
       try {
@@ -201,36 +602,35 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   }
 
   // 移除 Peer
-  const removePeer = (peerId: string) => {
+  const removePeer = (peerId: string): void => {
     const pc = peerConnections.get(peerId)
     if (pc) {
       pc.close()
       peerConnections.delete(peerId)
     }
     trackSenders.delete(peerId)
+    isOfferer.delete(peerId)
+    isNegotiating.delete(peerId)
     peers.value.delete(peerId)
     peers.value = new Map(peers.value)
     console.log(`👋 Peer removed: ${peerId}`)
   }
 
-  // 设置 Socket 监听器
-  const setupSocketListeners = () => {
+  // Socket 监听器
+  const setupSocketListeners = (): void => {
     const socket = socketStore.socket
     if (!socket) return
 
-    // 新用户加入 -> 主动发起呼叫
     socket.on('user-joined', ({ userId, userInfo }) => {
       console.log('👤 User joined:', userId)
       createOffer(userId, userInfo?.nickname)
     })
 
-    // 用户离开
     socket.on('user-left', ({ userId }) => {
       console.log('👤 User left:', userId)
       removePeer(userId)
     })
 
-    // 收到信令
     socket.on('signal', ({ from, payload, type }) => {
       console.log(`📨 Signal from ${from}: ${type}`)
       
@@ -247,7 +647,6 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       }
     })
 
-    // 获取房间现有用户 -> 主动发起呼叫给所有人
     socket.on('room-users', ({ users }) => {
       console.log('👥 Existing users:', users)
       users.forEach((userId: string) => {
@@ -257,7 +656,6 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       })
     })
 
-    // 媒体状态变更
     socket.on('user-media-state', ({ userId, isAudioEnabled, isVideoEnabled }) => {
       const peerData = peers.value.get(userId)
       if (peerData) {
@@ -268,8 +666,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     })
   }
 
-  // 清理 Socket 监听器
-  const cleanupSocketListeners = () => {
+  const cleanupSocketListeners = (): void => {
     const socket = socketStore.socket
     if (!socket) return
     
@@ -280,25 +677,30 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     socket.off('user-media-state')
   }
 
-  // 监听 socket 连接状态
   watch(() => socketStore.isConnected, (connected) => {
     if (connected) {
       setupSocketListeners()
+      startStatsCollection() // 🔑 启动统计信息收集
     }
   }, { immediate: true })
 
-  // 组件卸载时清理
   onUnmounted(() => {
+    stopStatsCollection() // 🔑 停止统计收集
     cleanupSocketListeners()
     peerConnections.forEach((pc) => pc.close())
     peerConnections.clear()
     trackSenders.clear()
+    isOfferer.clear()
+    isNegotiating.clear()
+    lastStatsData.clear()
     peers.value.clear()
   })
 
   return {
     peers,
     removePeer,
-    updateAllPeerTracks, // 导出供外部调用
+    updateAllPeerTracks,
+    maintainResolution,
+    setMaintainResolution,
   }
 }

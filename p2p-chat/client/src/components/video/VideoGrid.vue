@@ -6,12 +6,14 @@ import type { PeerData } from '@/types'
 interface Props {
   localStream: MediaStream | null
   localNickname: string
+  localFacingMode?: 'user' | 'environment' // 🔑 本地摄像头朝向
   peers: Map<string, PeerData>
   isAudioEnabled?: boolean
   isVideoEnabled?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  localFacingMode: 'user',
   isAudioEnabled: true,
   isVideoEnabled: true,
 })
@@ -39,6 +41,7 @@ const peersArray = computed(() => Array.from(props.peers.entries()))
         :muted="true"
         :nickname="localNickname"
         :is-local="true"
+        :facing-mode="localFacingMode"
         :is-audio-enabled="isAudioEnabled"
         :is-video-enabled="isVideoEnabled"
       />
@@ -51,6 +54,7 @@ const peersArray = computed(() => Array.from(props.peers.entries()))
         :nickname="peerData.nickname"
         :is-audio-enabled="peerData.isAudioEnabled"
         :is-video-enabled="peerData.isVideoEnabled"
+        :stats="peerData.stats"
       />
     </div>
   </div>

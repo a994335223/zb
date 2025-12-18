@@ -2,24 +2,29 @@
 interface Props {
   isAudioEnabled: boolean
   isVideoEnabled: boolean
+  isMobile?: boolean
 }
 
-defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  isMobile: false,
+})
 
 const emit = defineEmits<{
   toggleAudio: []
   toggleVideo: []
+  switchCamera: []
+  openSettings: []
   leaveRoom: []
 }>()
 </script>
 
 <template>
-  <div class="flex items-center justify-center gap-4 p-4 bg-gray-900 border-t border-gray-800">
+  <div class="flex items-center justify-center gap-3 p-4 bg-gray-900 border-t border-gray-800">
     <!-- 麦克风按钮 -->
     <button
       @click="emit('toggleAudio')"
       :class="[
-        'w-14 h-14 rounded-full flex items-center justify-center transition-all text-2xl',
+        'w-12 h-12 rounded-full flex items-center justify-center transition-all text-xl',
         isAudioEnabled 
           ? 'bg-gray-700 hover:bg-gray-600' 
           : 'bg-red-500 hover:bg-red-600'
@@ -33,7 +38,7 @@ const emit = defineEmits<{
     <button
       @click="emit('toggleVideo')"
       :class="[
-        'w-14 h-14 rounded-full flex items-center justify-center transition-all text-2xl',
+        'w-12 h-12 rounded-full flex items-center justify-center transition-all text-xl',
         isVideoEnabled 
           ? 'bg-gray-700 hover:bg-gray-600' 
           : 'bg-red-500 hover:bg-red-600'
@@ -43,10 +48,29 @@ const emit = defineEmits<{
       {{ isVideoEnabled ? '📹' : '📷' }}
     </button>
 
+    <!-- 切换前后置摄像头（仅移动端显示） -->
+    <button
+      v-if="isMobile"
+      @click="emit('switchCamera')"
+      class="w-12 h-12 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition-all text-xl"
+      title="切换摄像头"
+    >
+      🔄
+    </button>
+
+    <!-- 设置按钮 -->
+    <button
+      @click="emit('openSettings')"
+      class="w-12 h-12 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition-all text-xl"
+      title="摄像头设置"
+    >
+      ⚙️
+    </button>
+
     <!-- 离开按钮 -->
     <button
       @click="emit('leaveRoom')"
-      class="w-14 h-14 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center transition-all text-2xl"
+      class="w-12 h-12 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center transition-all text-xl"
       title="离开房间"
     >
       📞

@@ -8,6 +8,7 @@ import { useWebRTC } from '@/composables/useWebRTC'
 import VideoGrid from '@/components/video/VideoGrid.vue'
 import Controls from '@/components/video/Controls.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import CameraSettings from '@/components/video/CameraSettings.vue'
 import type { ChatMessage } from '@/types'
 
 const route = useRoute()
@@ -18,22 +19,30 @@ const roomStore = useRoomStore()
 const roomId = route.params.roomId as string
 const isJoined = ref(false)
 const showChat = ref(false)
+const showCameraSettings = ref(false)
 const errorMsg = ref('')
 const unreadCount = ref(0) // 未读消息数
+
+// 是否为移动设备
+const isMobile = computed(() => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
 
 // 媒体流
 const { 
   stream: localStream, 
   isAudioEnabled, 
   isVideoEnabled,
+  currentFacingMode, // 🔑 获取当前摄像头朝向
   startMedia, 
   stopMedia, 
   toggleAudio, 
-  toggleVideo 
+  toggleVideo,
+  applyVideoConstraints,
+  switchCamera,
+  setFacingMode, // 🔑 设置摄像头朝向
 } = useMediaStream()
 
 // WebRTC
-const { peers, updateAllPeerTracks } = useWebRTC(roomId, localStream)
+const { peers, updateAllPeerTracks, maintainResolution, setMaintainResolution } = useWebRTC(roomId, localStream)
 
 // 计算属性：peers 转数组
 const peersArray = computed(() => {
@@ -148,6 +157,35 @@ const handleToggleVideo = async () => {
   }
 }
 
+// 切换前后置摄像头
+const handleSwitchCamera = async () => {
+  const success = await switchCamera()
+  if (success) {
+    await updateAllPeerTracks()
+  }
+}
+
+// 应用摄像头设置
+const handleApplyCameraSettings = async (constraints: MediaTrackConstraints, facingMode: 'user' | 'environment') => {
+  // 🔑 同步更新 facingMode
+  setFacingMode(facingMode)
+  
+  const success = await applyVideoConstraints(constraints)
+  if (success) {
+    await updateAllPeerTracks()
+  }
+}
+
+// 更新保持分辨率设置
+const handleMaintainResolutionChange = async (value: boolean) => {
+  await setMaintainResolution(value)
+}
+
+// 打开设置
+const openCameraSettings = () => {
+  showCameraSettings.value = true
+}
+
 onMounted(() => {
   if (!roomStore.nickname) {
     // 如果没有昵称，先回首页设置
@@ -205,6 +243,7 @@ onUnmounted(() => {
           v-if="isJoined"
           :local-stream="localStream"
           :local-nickname="roomStore.nickname"
+          :local-facing-mode="currentFacingMode"
           :peers="peers"
           :is-audio-enabled="isAudioEnabled"
           :is-video-enabled="isVideoEnabled"
@@ -233,9 +272,21 @@ onUnmounted(() => {
       v-if="isJoined"
       :is-audio-enabled="isAudioEnabled"
       :is-video-enabled="isVideoEnabled"
+      :is-mobile="isMobile"
       @toggle-audio="handleToggleAudio"
       @toggle-video="handleToggleVideo"
+      @switch-camera="handleSwitchCamera"
+      @open-settings="openCameraSettings"
       @leave-room="leaveRoom"
+    />
+
+    <!-- 摄像头设置弹窗 -->
+    <CameraSettings
+      :show="showCameraSettings"
+      :maintain-resolution="maintainResolution"
+      @close="showCameraSettings = false"
+      @apply="handleApplyCameraSettings"
+      @update:maintain-resolution="handleMaintainResolutionChange"
     />
   </div>
 </template>

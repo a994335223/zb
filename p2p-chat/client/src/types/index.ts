@@ -21,6 +21,32 @@ export interface ChatMessage {
   timestamp: number
 }
 
+// WebRTC 连接统计信息
+export interface WebRTCStats {
+  // 连接类型: host=本地直连, srflx=STUN打洞, prflx=对等反射, relay=TURN中继
+  connectionType: 'host' | 'srflx' | 'prflx' | 'relay' | 'unknown'
+  // 本地候选类型
+  localCandidateType: string
+  // 远程候选类型
+  remoteCandidateType: string
+  // 接收比特率 (bps)
+  inboundBitrate: number
+  // 发送比特率 (bps)
+  outboundBitrate: number
+  // 丢包率 (0-100%)
+  packetsLostPercent: number
+  // 网络往返时间 (ms)
+  roundTripTime: number
+  // 抖动 (ms)
+  jitter: number
+  // 接收帧率
+  framesPerSecond: number
+  // 接收的帧数
+  framesReceived: number
+  // 丢弃的帧数
+  framesDropped: number
+}
+
 // Peer 数据
 export interface PeerData {
   peerId: string
@@ -28,6 +54,8 @@ export interface PeerData {
   stream: MediaStream | null
   isAudioEnabled: boolean
   isVideoEnabled: boolean
+  // 🔑 新增：连接统计信息
+  stats?: WebRTCStats
 }
 
 // 信令消息类型
