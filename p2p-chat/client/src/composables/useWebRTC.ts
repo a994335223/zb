@@ -7,6 +7,8 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   const socketStore = useSocketStore()
   const peers = ref<Map<string, PeerData>>(new Map())
   const peerConnections = new Map<string, RTCPeerConnection>()
+  // 存储每个连接的 sender，用于后续更新轨道
+  const trackSenders = new Map<string, Map<string, RTCRtpSender>>()
 
   // 创建 PeerConnection
   const createPeerConnection = (targetId: string, nickname = '用户'): RTCPeerConnection => {
@@ -14,11 +16,13 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     
     const pc = new RTCPeerConnection(iceConfig)
     peerConnections.set(targetId, pc)
+    trackSenders.set(targetId, new Map())
 
     // 添加本地流
     if (localStream.value) {
       localStream.value.getTracks().forEach(track => {
-        pc.addTrack(track, localStream.value!)
+        const sender = pc.addTrack(track, localStream.value!)
+        trackSenders.get(targetId)?.set(track.kind, sender)
       })
     }
 
@@ -44,11 +48,28 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
 
     // 接收到远程流
     pc.ontrack = (event) => {
-      console.log(`📺 Received track from: ${targetId}`)
+      console.log(`📺 Received track from: ${targetId}, kind: ${event.track.kind}`)
       const peerData = peers.value.get(targetId)
       if (peerData) {
         peerData.stream = event.streams[0]
         peers.value = new Map(peers.value)
+      }
+    }
+
+    // 需要重新协商时（添加新轨道后会触发）
+    pc.onnegotiationneeded = async () => {
+      console.log(`🔄 Negotiation needed for: ${targetId}`)
+      try {
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        socketStore.socket?.emit('signal', {
+          type: 'offer',
+          to: targetId,
+          roomId,
+          payload: offer,
+        })
+      } catch (err) {
+        console.error('❌ Renegotiation error:', err)
       }
     }
 
@@ -65,6 +86,50 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
 
     return pc
   }
+
+  // 更新所有 PeerConnection 的本地轨道
+  const updateAllPeerTracks = async () => {
+    if (!localStream.value) return
+    
+    console.log('🔄 Updating tracks for all peers...')
+    
+    for (const [peerId, pc] of peerConnections) {
+      const senders = trackSenders.get(peerId) || new Map()
+      
+      for (const track of localStream.value.getTracks()) {
+        const existingSender = senders.get(track.kind)
+        
+        if (existingSender) {
+          // 替换现有轨道
+          try {
+            await existingSender.replaceTrack(track)
+            console.log(`✅ Replaced ${track.kind} track for: ${peerId}`)
+          } catch (err) {
+            console.error(`❌ Replace track error:`, err)
+          }
+        } else {
+          // 添加新轨道
+          try {
+            const sender = pc.addTrack(track, localStream.value!)
+            senders.set(track.kind, sender)
+            console.log(`✅ Added ${track.kind} track for: ${peerId}`)
+          } catch (err) {
+            console.error(`❌ Add track error:`, err)
+          }
+        }
+      }
+      
+      trackSenders.set(peerId, senders)
+    }
+  }
+
+  // 监听本地流变化，更新所有连接
+  watch(localStream, (newStream, oldStream) => {
+    if (newStream && newStream !== oldStream) {
+      console.log('📹 Local stream changed, updating peers...')
+      updateAllPeerTracks()
+    }
+  })
 
   // 发起呼叫 (创建 Offer)
   const createOffer = async (targetId: string, nickname = '用户') => {
@@ -142,6 +207,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       pc.close()
       peerConnections.delete(peerId)
     }
+    trackSenders.delete(peerId)
     peers.value.delete(peerId)
     peers.value = new Map(peers.value)
     console.log(`👋 Peer removed: ${peerId}`)
@@ -226,11 +292,13 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     cleanupSocketListeners()
     peerConnections.forEach((pc) => pc.close())
     peerConnections.clear()
+    trackSenders.clear()
     peers.value.clear()
   })
 
   return {
     peers,
     removePeer,
+    updateAllPeerTracks, // 导出供外部调用
   }
 }

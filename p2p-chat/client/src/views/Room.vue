@@ -33,7 +33,7 @@ const {
 } = useMediaStream()
 
 // WebRTC
-const { peers } = useWebRTC(roomId, localStream)
+const { peers, updateAllPeerTracks } = useWebRTC(roomId, localStream)
 
 // 计算属性：peers 转数组
 const peersArray = computed(() => {
@@ -123,6 +123,9 @@ const leaveRoom = () => {
 const handleToggleAudio = async () => {
   const success = await toggleAudio()
   if (success) {
+    // 更新所有 Peer 的媒体轨道
+    await updateAllPeerTracks()
+    // 通知其他人媒体状态变化
     socketStore.socket?.emit('media-state', {
       roomId,
       isAudioEnabled: isAudioEnabled.value,
@@ -134,6 +137,9 @@ const handleToggleAudio = async () => {
 const handleToggleVideo = async () => {
   const success = await toggleVideo()
   if (success) {
+    // 更新所有 Peer 的媒体轨道
+    await updateAllPeerTracks()
+    // 通知其他人媒体状态变化
     socketStore.socket?.emit('media-state', {
       roomId,
       isAudioEnabled: isAudioEnabled.value,
