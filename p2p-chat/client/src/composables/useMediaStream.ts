@@ -1,10 +1,10 @@
 import { ref, computed, onUnmounted } from 'vue'
 
-// 默认视频约束
+// 默认视频约束 - 限制最大1080p，优先720p
 const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
-  width: { ideal: 1280 },
-  height: { ideal: 720 },
-  frameRate: { ideal: 30 },
+  width: { ideal: 1280, max: 1920 },
+  height: { ideal: 720, max: 1080 },
+  frameRate: { ideal: 30, min: 15 },
   facingMode: 'user',
 }
 
@@ -56,13 +56,13 @@ export function useMediaStream() {
       // 记录实际获取到的设置，并设置 contentHint
       const videoTrack = mediaStream.getVideoTracks()[0]
       if (videoTrack) {
-        // 🔑 关键：设置 contentHint 为 'detail'，告诉编码器优先保持清晰度
-        // 'motion' = 优先流畅（降分辨率）
-        // 'detail' = 优先清晰（降帧率）
+        // 🔑 关键：设置 contentHint 为 'motion'，优先保持流畅度
+        // 'motion' = 优先流畅（带宽不足时降分辨率，保持帧率）
+        // 'detail' = 优先清晰（带宽不足时降帧率，保持分辨率）
         // 'text' = 适合屏幕共享
         if ('contentHint' in videoTrack) {
-          (videoTrack as any).contentHint = 'detail'
-          console.log('🔒 Set contentHint = detail (prioritize resolution)')
+          (videoTrack as any).contentHint = 'motion'
+          console.log('🎬 Set contentHint = motion (prioritize smoothness)')
         }
         
         const settings = videoTrack.getSettings()
@@ -103,10 +103,10 @@ export function useMediaStream() {
         const newVideoTrack = newVideoStream.getVideoTracks()[0]
         console.log('📷 New video track:', newVideoTrack.id.slice(0, 8), newVideoTrack.label)
         
-        // 🔑 设置 contentHint 为 'detail'
+        // 🔑 设置 contentHint 为 'motion'
         if ('contentHint' in newVideoTrack) {
-          (newVideoTrack as any).contentHint = 'detail'
-          console.log('🔒 Set contentHint = detail')
+          (newVideoTrack as any).contentHint = 'motion'
+          console.log('🎬 Set contentHint = motion')
         }
         
         // 先移除旧轨道，再添加新轨道
