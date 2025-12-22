@@ -39,8 +39,9 @@ const {
   toggleVideo,
   applyVideoConstraints,
   switchCamera,
-  setFacingMode, // 🔑 设置摄像头朝向
-  switchVideoMode, // 🎬 切换视频模式
+  setFacingMode,    // 🔑 设置摄像头朝向
+  switchVideoMode,  // 🎬 切换视频模式
+  setVideoMode,     // 🎬 设置视频模式（不重新获取流）
 } = useMediaStream()
 
 // WebRTC + DataChannel
@@ -188,17 +189,18 @@ const handleSwitchCamera = async () => {
 
 // 🎬 切换视频模式（4K清晰 / 流畅）
 const handleSwitchVideoMode = async () => {
-  const newMode = videoMode.value === 'quality' ? 'smooth' : 'quality'
-  console.log(`🎬 Switching video mode to: ${newMode}`)
+  console.log(`🎬 Current mode: ${videoMode.value}, switching...`)
   
-  // 1. 切换媒体流的视频约束
+  // 1. 切换媒体流的视频约束（内部会更新 videoMode）
   const success = await switchVideoMode()
   if (success) {
     // 2. 同步更新 WebRTC 的分辨率保持策略
-    await setMaintainResolution(newMode === 'quality')
+    // quality模式 = maintainResolution = true（保分辨率）
+    // smooth模式 = maintainResolution = false（保帧率）
+    await setMaintainResolution(videoMode.value === 'quality')
     // 3. 更新所有 Peer 的媒体轨道
     await updateAllPeerTracks()
-    console.log(`🎬 Video mode switched to: ${newMode}`)
+    console.log(`🎬 Video mode switched to: ${videoMode.value}`)
   }
 }
 
@@ -213,9 +215,13 @@ const handleApplyCameraSettings = async (constraints: MediaTrackConstraints, fac
   }
 }
 
-// 更新保持分辨率设置
+// 更新保持分辨率设置（同步视频模式状态）
 const handleMaintainResolutionChange = async (value: boolean) => {
   await setMaintainResolution(value)
+  // 🔑 同步更新视频模式显示（但不改变媒体流约束）
+  // maintainResolution=true 对应 quality 模式
+  // maintainResolution=false 对应 smooth 模式
+  setVideoMode(value ? 'quality' : 'smooth')
 }
 
 // 打开设置
