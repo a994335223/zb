@@ -5,10 +5,12 @@ import { useCamera } from '@/composables/useCamera'
 interface Props {
   show: boolean
   maintainResolution?: boolean // 是否保持分辨率
+  currentStream?: MediaStream | null // 🔑 当前视频流，用于同步实际分辨率
 }
 
 const props = withDefaults(defineProps<Props>(), {
   maintainResolution: true,
+  currentStream: null,
 })
 
 const emit = defineEmits<{
@@ -33,12 +35,14 @@ const {
   selectFrameRate,
   useMaxQuality,
   getVideoConstraints,
+  syncFromStream, // 🔑 从当前流同步设置
   FRAMERATE_PRESETS,
 } = useCamera()
 
 // 本地状态
 const localMaintainResolution = ref(props.maintainResolution)
 const selectedCameraId = ref('')
+const isInitialized = ref(false)
 
 // 同步外部值
 watch(() => props.maintainResolution, (val) => {
@@ -51,6 +55,15 @@ const toggleMaintainResolution = () => {
   emit('update:maintainResolution', localMaintainResolution.value)
 }
 
+// 🔑 当设置面板打开时，同步当前流的实际分辨率
+watch(() => props.show, async (isShow) => {
+  if (isShow && props.currentStream) {
+    // 同步当前流的实际设置
+    syncFromStream(props.currentStream)
+    console.log('📷 Settings panel opened, synced from current stream')
+  }
+})
+
 // 初始化
 onMounted(async () => {
   await getCameras()
@@ -58,11 +71,18 @@ onMounted(async () => {
     selectedCameraId.value = cameras.value[0].deviceId
     await getCameraCapabilities(cameras.value[0].deviceId)
   }
+  
+  // 🔑 初始化时也同步当前流的设置
+  if (props.currentStream) {
+    syncFromStream(props.currentStream)
+  }
+  
+  isInitialized.value = true
 })
 
 // 切换摄像头时重新获取能力
 watch(selectedCameraId, async (newId) => {
-  if (newId) {
+  if (newId && isInitialized.value) {
     selectCamera(newId)
     await getCameraCapabilities(newId)
   }

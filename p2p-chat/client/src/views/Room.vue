@@ -329,6 +329,7 @@ onUnmounted(() => {
     <CameraSettings
       :show="showCameraSettings"
       :maintain-resolution="maintainResolution"
+      :current-stream="localStream"
       @close="showCameraSettings = false"
       @apply="handleApplyCameraSettings"
       @update:maintain-resolution="handleMaintainResolutionChange"

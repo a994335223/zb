@@ -33,7 +33,8 @@ export function useCamera() {
   const supportedResolutions = ref<Resolution[]>([])
   const maxResolution = ref<Resolution | null>(null)
   const maxFrameRate = ref<number>(30)
-  const selectedResolution = ref<Resolution>(RESOLUTION_PRESETS[2]) // 默认720p
+  // 🔑 默认选中4K，与 useMediaStream 的 QUALITY_MODE_CONSTRAINTS 保持一致
+  const selectedResolution = ref<Resolution>(RESOLUTION_PRESETS[0]) // 默认4K
   const selectedFrameRate = ref<number>(30)
   const isLoading = ref(false)
   
@@ -210,6 +211,51 @@ export function useCamera() {
     return constraints
   }
 
+  // 🔑 从当前视频流同步实际分辨率（打开设置时调用）
+  const syncFromStream = (stream: MediaStream | null): void => {
+    if (!stream) return
+    
+    const videoTrack = stream.getVideoTracks()[0]
+    if (!videoTrack) return
+    
+    const settings = videoTrack.getSettings()
+    const actualWidth = settings.width || 1280
+    const actualHeight = settings.height || 720
+    const actualFps = settings.frameRate || 30
+    
+    console.log('📊 Syncing from stream:', { actualWidth, actualHeight, actualFps })
+    
+    // 找到匹配的预设分辨率，或创建一个自定义的
+    const matchedRes = RESOLUTION_PRESETS.find(
+      r => r.width === actualWidth && r.height === actualHeight
+    )
+    
+    if (matchedRes) {
+      selectedResolution.value = matchedRes
+    } else {
+      // 创建一个自定义分辨率
+      selectedResolution.value = {
+        width: actualWidth,
+        height: actualHeight,
+        label: `${actualWidth}×${actualHeight}`
+      }
+    }
+    
+    // 同步帧率
+    selectedFrameRate.value = Math.round(actualFps)
+    
+    // 同步 facingMode
+    if (settings.facingMode === 'user' || settings.facingMode === 'environment') {
+      currentFacingMode.value = settings.facingMode
+    }
+    
+    console.log('📊 Synced settings:', {
+      resolution: selectedResolution.value.label,
+      frameRate: selectedFrameRate.value,
+      facingMode: currentFacingMode.value
+    })
+  }
+
   return {
     cameras,
     currentCameraId,
@@ -231,6 +277,7 @@ export function useCamera() {
     useMaxQuality,
     toggleMaintainResolution,
     getVideoConstraints,
+    syncFromStream, // 🔑 新增：从当前流同步设置
     RESOLUTION_PRESETS,
     FRAMERATE_PRESETS,
   }
