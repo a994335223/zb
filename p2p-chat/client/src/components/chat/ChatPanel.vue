@@ -1,28 +1,29 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted } from 'vue'
-import { useSocketStore } from '@/stores/socket'
 import { useRoomStore } from '@/stores/room'
 
 interface Props {
   roomId: string
 }
 
-const props = defineProps<Props>()
+defineProps<Props>()
 
-const socketStore = useSocketStore()
+// 🔑 事件：通过 P2P DataChannel 发送消息
+const emit = defineEmits<{
+  (e: 'send-message', content: string): void
+}>()
+
 const roomStore = useRoomStore()
 const messageInput = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 
-// 发送消息
+// 发送消息（通过 emit 由父组件处理 P2P 广播）
 const sendMessage = () => {
   const content = messageInput.value.trim()
   if (!content) return
 
-  socketStore.socket?.emit('chat-message', {
-    roomId: props.roomId,
-    content,
-  })
+  // 🔑 P2P 方式发送
+  emit('send-message', content)
 
   messageInput.value = ''
 }

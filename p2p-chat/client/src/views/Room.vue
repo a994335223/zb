@@ -41,8 +41,17 @@ const {
   setFacingMode, // 🔑 设置摄像头朝向
 } = useMediaStream()
 
-// WebRTC
-const { peers, updateAllPeerTracks, maintainResolution, setMaintainResolution } = useWebRTC(roomId, localStream)
+// WebRTC + DataChannel
+const { 
+  peers, 
+  updateAllPeerTracks, 
+  maintainResolution, 
+  setMaintainResolution,
+  // 🔑 P2P 消息功能
+  broadcastMessage,
+  onMessage,
+  offMessage,
+} = useWebRTC(roomId, localStream)
 
 // 计算属性：peers 转数组
 const peersArray = computed(() => {
@@ -52,7 +61,7 @@ const peersArray = computed(() => {
   }))
 })
 
-// ========== 消息监听（在Room级别，确保始终接收消息）==========
+// ========== P2P 消息监听（使用 DataChannel）==========
 let chatListenerSetup = false
 
 const handleChatMessage = (msg: ChatMessage) => {
@@ -61,29 +70,39 @@ const handleChatMessage = (msg: ChatMessage) => {
   if (!showChat.value) {
     unreadCount.value++
   }
-  console.log('💬 Message received:', msg.content)
+  console.log('💬 [P2P] Message received:', msg.content)
 }
 
 const setupChatListener = () => {
-  if (chatListenerSetup || !socketStore.socket) return
-  socketStore.socket.off('chat-message', handleChatMessage)
-  socketStore.socket.on('chat-message', handleChatMessage)
+  if (chatListenerSetup) return
+  // 🔑 使用 DataChannel 的 onMessage 注册回调
+  onMessage(handleChatMessage)
   chatListenerSetup = true
-  console.log('📨 Room chat listener setup')
+  console.log('📨 [P2P] Room chat listener setup')
 }
 
 const cleanupChatListener = () => {
-  socketStore.socket?.off('chat-message', handleChatMessage)
+  offMessage(handleChatMessage)
   chatListenerSetup = false
 }
 
-// 监听socket变化
-watch(() => socketStore.socket, (newSocket) => {
-  if (newSocket) {
-    chatListenerSetup = false
-    setupChatListener()
+// 🔑 发送消息（P2P 广播 + 本地显示）
+const sendChatMessage = (content: string) => {
+  const myId = socketStore.socket?.id || 'local'
+  const message: ChatMessage = {
+    id: `${Date.now()}-${myId}`,
+    from: myId,
+    nickname: roomStore.nickname || '我',
+    content,
+    timestamp: Date.now(),
   }
-}, { immediate: true })
+  
+  // 本地立即显示
+  roomStore.addMessage(message)
+  
+  // P2P 广播给所有 Peer
+  broadcastMessage(message)
+}
 
 // 打开聊天时清除未读
 watch(showChat, (isOpen) => {
@@ -101,7 +120,7 @@ const joinRoom = async () => {
     console.warn('⚠️ 无法获取媒体设备，将以纯文字模式加入')
   }
   
-  // 设置消息监听
+  // 🔑 设置 P2P 消息监听（DataChannel）
   setupChatListener()
   
   // 加入房间
@@ -263,7 +282,7 @@ onUnmounted(() => {
         v-if="showChat" 
         class="w-80 border-l border-gray-800 bg-gray-900"
       >
-        <ChatPanel :room-id="roomId" />
+        <ChatPanel :room-id="roomId" @send-message="sendChatMessage" />
       </div>
     </div>
 

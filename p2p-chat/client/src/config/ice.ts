@@ -27,7 +27,15 @@ const getSocketUrl = () => {
   if (import.meta.env.VITE_SOCKET_URL) {
     return import.meta.env.VITE_SOCKET_URL
   }
-  // 否则使用当前访问的主机地址 + 后端端口
+  
+  // 🔑 生产环境：使用相对路径（Nginx 反向代理）
+  if (import.meta.env.PROD) {
+    // 生产环境通过 Nginx 反向代理，使用当前协议
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}`
+  }
+  
+  // 开发环境：使用当前访问的主机地址 + 后端端口
   const host = window.location.hostname
   return `http://${host}:3001`
 }

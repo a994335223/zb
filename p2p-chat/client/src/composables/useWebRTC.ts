@@ -1,7 +1,7 @@
 import { ref, onUnmounted, watch, type Ref } from 'vue'
 import { useSocketStore } from '@/stores/socket'
 import { iceConfig } from '@/config/ice'
-import type { PeerData, WebRTCStats } from '@/types'
+import type { PeerData, WebRTCStats, ChatMessage, DataChannelMessage } from '@/types'
 
 // 🔑 根据分辨率计算合理的最大码率（单位：bps）
 // 4K 60fps: 100-200 Mbps
@@ -37,6 +37,10 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   const trackSenders = new Map<string, Map<string, RTCRtpSender>>()
   const isOfferer = new Map<string, boolean>()
   const isNegotiating = new Map<string, boolean>()
+  
+  // 🔑 DataChannel - P2P 消息传输
+  const dataChannels = new Map<string, RTCDataChannel>()
+  const onMessageCallbacks = ref<((msg: ChatMessage) => void)[]>([])
   
   // 🔑 是否保持分辨率不降级（默认开启 - 适合高画质需求）
   const maintainResolution = ref<boolean>(true)
@@ -184,6 +188,90 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     }
   }
 
+  // ========== 📨 DataChannel P2P 消息功能 ==========
+  
+  // 处理收到的 DataChannel 消息
+  const handleDataChannelMessage = (peerId: string, event: MessageEvent): void => {
+    try {
+      const data: DataChannelMessage = JSON.parse(event.data)
+      
+      if (data.type === 'chat') {
+        const chatMsg = data.payload as ChatMessage
+        console.log(`📨 [P2P] Received chat from ${peerId}:`, chatMsg.content)
+        
+        // 触发所有注册的回调
+        onMessageCallbacks.value.forEach(cb => cb(chatMsg))
+      }
+    } catch (err) {
+      console.error('❌ Failed to parse DataChannel message:', err)
+    }
+  }
+
+  // 设置 DataChannel 事件监听
+  const setupDataChannel = (channel: RTCDataChannel, peerId: string): void => {
+    channel.onopen = () => {
+      console.log(`📡 [P2P] DataChannel opened with: ${peerId}`)
+      dataChannels.set(peerId, channel)
+    }
+    
+    channel.onclose = () => {
+      console.log(`📡 [P2P] DataChannel closed with: ${peerId}`)
+      dataChannels.delete(peerId)
+    }
+    
+    channel.onerror = (err) => {
+      console.error(`❌ [P2P] DataChannel error with ${peerId}:`, err)
+    }
+    
+    channel.onmessage = (event) => handleDataChannelMessage(peerId, event)
+  }
+
+  // 注册消息回调
+  const onMessage = (callback: (msg: ChatMessage) => void): void => {
+    onMessageCallbacks.value.push(callback)
+  }
+
+  // 移除消息回调
+  const offMessage = (callback: (msg: ChatMessage) => void): void => {
+    const index = onMessageCallbacks.value.indexOf(callback)
+    if (index > -1) {
+      onMessageCallbacks.value.splice(index, 1)
+    }
+  }
+
+  // 🔑 广播消息到所有已连接的 Peer（P2P 方式）
+  const broadcastMessage = (message: ChatMessage): void => {
+    const dataMsg: DataChannelMessage = {
+      type: 'chat',
+      payload: message
+    }
+    const msgStr = JSON.stringify(dataMsg)
+    
+    let sentCount = 0
+    dataChannels.forEach((channel, peerId) => {
+      if (channel.readyState === 'open') {
+        channel.send(msgStr)
+        sentCount++
+        console.log(`📤 [P2P] Sent to ${peerId}`)
+      } else {
+        console.warn(`⚠️ [P2P] Channel not ready for ${peerId}, state: ${channel.readyState}`)
+      }
+    })
+    
+    console.log(`📤 [P2P] Broadcast message to ${sentCount}/${dataChannels.size} peers`)
+  }
+
+  // 获取已连接的 DataChannel 数量
+  const getConnectedChannelsCount = (): number => {
+    let count = 0
+    dataChannels.forEach(channel => {
+      if (channel.readyState === 'open') count++
+    })
+    return count
+  }
+
+  // ========== 📨 DataChannel 功能结束 ==========
+
   // 🔑 核心：设置 sender 的编码参数，强制保持分辨率
   const applySenderDegradationPreference = async (sender: RTCRtpSender): Promise<void> => {
     if (!sender.track || sender.track.kind !== 'video') return
@@ -293,13 +381,28 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   }
 
   // 创建 PeerConnection
-  const createPeerConnection = (targetId: string, nickname = '用户'): RTCPeerConnection => {
-    console.log(`🔗 Creating peer connection for: ${targetId}`)
+  const createPeerConnection = (targetId: string, nickname = '用户', asOfferer = false): RTCPeerConnection => {
+    console.log(`🔗 Creating peer connection for: ${targetId}, asOfferer: ${asOfferer}`)
     
     const pc = new RTCPeerConnection(iceConfig)
     peerConnections.set(targetId, pc)
     trackSenders.set(targetId, new Map())
     isNegotiating.set(targetId, false)
+
+    // 🔑 如果是发起方，创建 DataChannel
+    if (asOfferer) {
+      const channel = pc.createDataChannel('chat', {
+        ordered: true, // 保证消息顺序
+      })
+      setupDataChannel(channel, targetId)
+      console.log(`📡 [P2P] DataChannel created for: ${targetId}`)
+    }
+
+    // 🔑 接收对方创建的 DataChannel
+    pc.ondatachannel = (event) => {
+      console.log(`📡 [P2P] DataChannel received from: ${targetId}`)
+      setupDataChannel(event.channel, targetId)
+    }
 
     // ICE 候选
     pc.onicecandidate = (event) => {
@@ -498,7 +601,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     isOfferer.set(targetId, true)
     isNegotiating.set(targetId, true)
     
-    const pc = createPeerConnection(targetId, nickname)
+    const pc = createPeerConnection(targetId, nickname, true) // 🔑 asOfferer = true
     
     // 添加本地轨道
     await addLocalTracksToPC(pc, targetId)
@@ -603,6 +706,13 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
 
   // 移除 Peer
   const removePeer = (peerId: string): void => {
+    // 关闭 DataChannel
+    const channel = dataChannels.get(peerId)
+    if (channel) {
+      channel.close()
+      dataChannels.delete(peerId)
+    }
+    
     const pc = peerConnections.get(peerId)
     if (pc) {
       pc.close()
@@ -611,6 +721,7 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     trackSenders.delete(peerId)
     isOfferer.delete(peerId)
     isNegotiating.delete(peerId)
+    lastStatsData.delete(peerId)
     peers.value.delete(peerId)
     peers.value = new Map(peers.value)
     console.log(`👋 Peer removed: ${peerId}`)
@@ -687,6 +798,12 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   onUnmounted(() => {
     stopStatsCollection() // 🔑 停止统计收集
     cleanupSocketListeners()
+    
+    // 关闭所有 DataChannel
+    dataChannels.forEach(channel => channel.close())
+    dataChannels.clear()
+    onMessageCallbacks.value = []
+    
     peerConnections.forEach((pc) => pc.close())
     peerConnections.clear()
     trackSenders.clear()
@@ -702,5 +819,10 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     updateAllPeerTracks,
     maintainResolution,
     setMaintainResolution,
+    // 🔑 DataChannel P2P 消息
+    broadcastMessage,
+    onMessage,
+    offMessage,
+    getConnectedChannelsCount,
   }
 }

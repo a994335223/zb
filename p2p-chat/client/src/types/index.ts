@@ -69,3 +69,15 @@ export interface SignalPayload {
   payload: any
 }
 
+// DataChannel 消息类型
+export interface DataChannelMessage {
+  type: 'chat' | 'system'
+  payload: ChatMessage | SystemMessage
+}
+
+// 系统消息（用于扩展）
+export interface SystemMessage {
+  action: string
+  data?: any
+}
+
