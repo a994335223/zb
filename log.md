@@ -1,36 +1,59 @@
-root@vps-btar:/var/www/p2p-chat/p2p-chat/deploy# tail -30 /var/log/p2p-chat-deploy.log
-Executing: /usr/lib/systemd/systemd-sysv-install enable coturn
-2025-12-22 10:22:05 [SUCCESS] ✅ coturn 配置
-2025-12-22 10:22:05 [INFO] [9/12] 克隆项目代码...
-2025-12-22 10:22:05 [WARNING] ⚠️ 目录已存在，正在更新...
-HEAD is now at 548c449 fix tsconfig
-2025-12-22 10:22:05 [SUCCESS] ✅ 代码克隆/更新
-2025-12-22 10:22:05 [INFO] [10/12] 构建前端和后端...
-2025-12-22 10:22:05 [SUCCESS] ✅ 前端环境配置已创建
-2025-12-22 10:22:05 [INFO]     构建前端 (npm install)...
+root@vps-btar:/var/www/p2p-chat# git pull
+remote: Enumerating objects: 11, done.
+remote: Counting objects: 100% (11/11), done.
+remote: Compressing objects: 100% (3/3), done.
+remote: Total 6 (delta 3), reused 6 (delta 3), pack-reused 0 (from 0)
+Unpacking objects: 100% (6/6), 936 bytes | 468.00 KiB/s, done.
+From https://github.com/a994335223/zb
+   548c449..6151463  main       -> origin/main
+Updating 548c449..6151463
+Fast-forward
+ log.md                       | 56 ++++++++++++++++++++------------------------------------
+ p2p-chat/client/package.json |  2 +-
+ 2 files changed, 21 insertions(+), 37 deletions(-)
+root@vps-btar:/var/www/p2p-chat# cd p2p-chat/deploy
+root@vps-btar:/var/www/p2p-chat/p2p-chat/deploy# chmod +x full-deploy.sh
+root@vps-btar:/var/www/p2p-chat/p2p-chat/deploy# ./full-deploy.sh
 
-up to date, audited 158 packages in 1s
+========================================================
+🚀 P2P Chat 一键部署脚本
+========================================================
+📍 服务器 IP: 173.208.218.151
+📁 安装目录: /var/www/p2p-chat
+📝 日志文件: /var/log/p2p-chat-deploy.log
+========================================================
 
-46 packages are looking for funding
-  run `npm fund` for details
-
-found 0 vulnerabilities
-2025-12-22 10:22:07 [SUCCESS] ✅ 前端依赖安装
-2025-12-22 10:22:07 [INFO]     构建前端 (npm run build)...
-
-> client@0.0.0 build
-> tsc && vite build
-
-src/composables/useWebRTC.ts(309,11): error TS2322: Type 'string' is not assignable to type 'number'.
-src/composables/useWebRTC.ts(309,33): error TS2349: This expression is not callable.
-  Type 'Number' has no call signatures.
-src/composables/useWebRTC.ts(310,40): error TS2349: This expression is not callable.
-  Type 'String' has no call signatures.
-2025-12-22 10:22:11 [ERROR] ❌ 脚本在第 194 行出错，退出码: 2
-2025-12-22 10:22:11 [ERROR] ❌ 请查看日志文件: /var/log/p2p-chat-deploy.log
-2025-12-22 10:22:11 [ERROR] ❌ 或运行: tail -100 /var/log/p2p-chat-deploy.log
-root@vps-btar:/var/www/p2p-chat/p2p-chat/deploy# cd /var/www/p2p-chat && git log --oneline -3
-548c449 (HEAD -> main, origin/main, origin/HEAD) fix tsconfig
-057b8b7 鏀硅繘閮ㄧ讲鑴氭湰锛氭坊鍔犺缁嗘棩蹇楀拰閿欒澶勭悊
-7d98923 修复聊天p2p
-root@vps-btar:/var/www/p2p-chat# 
+2025-12-22 10:27:52 [INFO] [1/12] 更新系统软件包...
+2025-12-22 10:27:56 [SUCCESS] ✅ 系统更新
+2025-12-22 10:27:56 [INFO] [2/12] 安装基础依赖 (git, curl, build-essential)...
+2025-12-22 10:27:58 [SUCCESS] ✅ 基础依赖安装
+2025-12-22 10:27:58 [INFO] [3/12] 安装 Node.js 20...
+2025-12-22 10:27:58 [WARNING] ⚠️ Node.js 已安装: v20.19.6
+2025-12-22 10:27:58 [SUCCESS] ✅ Node.js: v20.19.6, npm: 10.8.2
+2025-12-22 10:27:58 [INFO] [4/12] 安装 PM2 进程管理器...
+2025-12-22 10:28:06 [SUCCESS] ✅ PM2 安装
+2025-12-22 10:28:06 [INFO] [5/12] 安装 Nginx...
+2025-12-22 10:28:08 [SUCCESS] ✅ Nginx 安装
+2025-12-22 10:28:08 [INFO] [6/12] 安装 coturn (STUN/TURN 服务器)...
+2025-12-22 10:28:10 [SUCCESS] ✅ coturn 安装
+2025-12-22 10:28:10 [INFO] [7/12] 生成自签名 SSL 证书...
+2025-12-22 10:28:10 [WARNING] ⚠️ SSL 证书已存在，跳过生成
+2025-12-22 10:28:10 [SUCCESS] ✅ SSL 证书生成
+2025-12-22 10:28:10 [INFO] [8/12] 配置 TURN 服务器...
+2025-12-22 10:28:11 [SUCCESS] ✅ coturn 配置
+2025-12-22 10:28:11 [INFO] [9/12] 克隆项目代码...
+2025-12-22 10:28:11 [WARNING] ⚠️ 目录已存在，正在更新...
+2025-12-22 10:28:12 [SUCCESS] ✅ 代码克隆/更新
+2025-12-22 10:28:12 [INFO] [10/12] 构建前端和后端...
+2025-12-22 10:28:12 [SUCCESS] ✅ 前端环境配置已创建
+2025-12-22 10:28:12 [INFO]     构建前端 (npm install)...
+2025-12-22 10:28:13 [SUCCESS] ✅ 前端依赖安装
+2025-12-22 10:28:13 [INFO]     构建前端 (npm run build)...
+2025-12-22 10:28:20 [SUCCESS] ✅ 前端构建
+2025-12-22 10:28:20 [INFO]     构建后端 (npm install)...
+2025-12-22 10:28:21 [SUCCESS] ✅ 后端依赖安装
+2025-12-22 10:28:21 [INFO]     构建后端 (npm run build)...
+2025-12-22 10:28:22 [ERROR] ❌ 脚本在第 204 行出错，退出码: 127
+2025-12-22 10:28:22 [ERROR] ❌ 请查看日志文件: /var/log/p2p-chat-deploy.log
+2025-12-22 10:28:22 [ERROR] ❌ 或运行: tail -100 /var/log/p2p-chat-deploy.log
+root@vps-btar:/var/www/p2p-chat/p2p-chat/deploy# 
