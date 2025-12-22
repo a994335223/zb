@@ -1,10 +1,21 @@
 import { ref, computed, onUnmounted } from 'vue'
 
-// 默认视频约束 - 支持4K高清，不限制最大分辨率
-const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+// 🎬 视频模式类型
+export type VideoMode = 'quality' | 'smooth'
+
+// 4K清晰模式约束 - 优先保持分辨率
+const QUALITY_MODE_CONSTRAINTS: MediaTrackConstraints = {
   width: { ideal: 3840 },    // 4K
   height: { ideal: 2160 },   // 4K
   frameRate: { ideal: 30 },
+  facingMode: 'user',
+}
+
+// 流畅模式约束 - 优先保持帧率
+const SMOOTH_MODE_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 1280, max: 1920 },   // 720p-1080p
+  height: { ideal: 720, max: 1080 },
+  frameRate: { ideal: 30, min: 24 },   // 保证至少24fps
   facingMode: 'user',
 }
 
@@ -21,7 +32,10 @@ export function useMediaStream() {
   const isVideoEnabled = ref(false)
   const error = ref<string | null>(null)
   const isRequesting = ref(false)
-  const currentVideoConstraints = ref<MediaTrackConstraints>({ ...DEFAULT_VIDEO_CONSTRAINTS })
+  
+  // 🎬 视频模式: 'quality' = 4K清晰模式, 'smooth' = 流畅模式
+  const videoMode = ref<VideoMode>('quality')
+  const currentVideoConstraints = ref<MediaTrackConstraints>({ ...QUALITY_MODE_CONSTRAINTS })
   const currentFacingMode = ref<'user' | 'environment'>('user')
 
   // 是否有媒体流
@@ -56,17 +70,18 @@ export function useMediaStream() {
       // 记录实际获取到的设置，并设置 contentHint
       const videoTrack = mediaStream.getVideoTracks()[0]
       if (videoTrack) {
-        // 🔑 关键：设置 contentHint 为 'detail'，优先保持4K清晰度
-        // 'motion' = 优先流畅（带宽不足时降分辨率，保持帧率）
-        // 'detail' = 优先清晰（带宽不足时降帧率，保持分辨率）- 适合4K推流
-        // 'text' = 适合屏幕共享
+        // 🔑 根据模式设置 contentHint
+        // 'motion' = 流畅模式（带宽不足时降分辨率，保持帧率）
+        // 'detail' = 清晰模式（带宽不足时降帧率，保持分辨率）
         if ('contentHint' in videoTrack) {
-          (videoTrack as any).contentHint = 'detail'
-          console.log('🔒 Set contentHint = detail (prioritize 4K resolution)')
+          const hint = videoMode.value === 'quality' ? 'detail' : 'motion'
+          ;(videoTrack as any).contentHint = hint
+          console.log(`🎬 Set contentHint = ${hint} (${videoMode.value} mode)`)
         }
         
         const settings = videoTrack.getSettings()
         console.log('📹 Media stream started:', {
+          mode: videoMode.value,
           width: settings.width,
           height: settings.height,
           frameRate: settings.frameRate,
@@ -103,10 +118,11 @@ export function useMediaStream() {
         const newVideoTrack = newVideoStream.getVideoTracks()[0]
         console.log('📷 New video track:', newVideoTrack.id.slice(0, 8), newVideoTrack.label)
         
-        // 🔑 设置 contentHint 为 'detail'
+        // 🔑 根据模式设置 contentHint
         if ('contentHint' in newVideoTrack) {
-          (newVideoTrack as any).contentHint = 'detail'
-          console.log('🔒 Set contentHint = detail')
+          const hint = videoMode.value === 'quality' ? 'detail' : 'motion'
+          ;(newVideoTrack as any).contentHint = hint
+          console.log(`🎬 Set contentHint = ${hint}`)
         }
         
         // 先移除旧轨道，再添加新轨道
@@ -257,6 +273,53 @@ export function useMediaStream() {
     console.log('📷 FacingMode set to:', mode === 'user' ? '前置' : '后置')
   }
 
+  // 🎬 切换视频模式
+  const switchVideoMode = async (): Promise<boolean> => {
+    const newMode: VideoMode = videoMode.value === 'quality' ? 'smooth' : 'quality'
+    videoMode.value = newMode
+    
+    // 获取对应模式的约束
+    const modeConstraints = newMode === 'quality' 
+      ? QUALITY_MODE_CONSTRAINTS 
+      : SMOOTH_MODE_CONSTRAINTS
+    
+    // 保留当前的 facingMode
+    const newConstraints = {
+      ...modeConstraints,
+      facingMode: currentFacingMode.value,
+    }
+    
+    console.log(`🎬 Switching to ${newMode} mode:`, newConstraints)
+    
+    // 应用新约束
+    const success = await applyVideoConstraints(newConstraints)
+    
+    if (success) {
+      // 更新视频轨道的 contentHint
+      const videoTrack = stream.value?.getVideoTracks()[0]
+      if (videoTrack && 'contentHint' in videoTrack) {
+        const hint = newMode === 'quality' ? 'detail' : 'motion'
+        ;(videoTrack as any).contentHint = hint
+        console.log(`🎬 Updated contentHint = ${hint}`)
+      }
+    }
+    
+    return success
+  }
+
+  // 🎬 设置视频模式（不重新获取流，用于初始化）
+  const setVideoMode = (mode: VideoMode) => {
+    videoMode.value = mode
+    const modeConstraints = mode === 'quality' 
+      ? QUALITY_MODE_CONSTRAINTS 
+      : SMOOTH_MODE_CONSTRAINTS
+    currentVideoConstraints.value = {
+      ...modeConstraints,
+      facingMode: currentFacingMode.value,
+    }
+    console.log(`🎬 Video mode set to: ${mode}`)
+  }
+
   return {
     stream,
     isAudioEnabled,
@@ -266,6 +329,7 @@ export function useMediaStream() {
     isRequesting,
     currentFacingMode,
     currentVideoConstraints,
+    videoMode,
     startMedia,
     stopMedia,
     toggleAudio,
@@ -273,6 +337,8 @@ export function useMediaStream() {
     applyVideoConstraints,
     switchCamera,
     setFacingMode,
+    switchVideoMode,
+    setVideoMode,
   }
 }
 

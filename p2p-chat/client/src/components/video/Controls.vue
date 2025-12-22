@@ -1,12 +1,17 @@
 <script setup lang="ts">
+// 视频模式类型
+type VideoMode = 'quality' | 'smooth'
+
 interface Props {
   isAudioEnabled: boolean
   isVideoEnabled: boolean
   isMobile?: boolean
+  videoMode?: VideoMode
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isMobile: false,
+  videoMode: 'quality',
 })
 
 const emit = defineEmits<{
@@ -15,6 +20,7 @@ const emit = defineEmits<{
   switchCamera: []
   openSettings: []
   leaveRoom: []
+  switchVideoMode: []
 }>()
 </script>
 
@@ -56,6 +62,21 @@ const emit = defineEmits<{
       title="切换摄像头"
     >
       🔄
+    </button>
+
+    <!-- 🎬 视频模式切换按钮 -->
+    <button
+      @click="emit('switchVideoMode')"
+      :class="[
+        'h-12 px-3 rounded-full flex items-center justify-center gap-1 transition-all text-sm font-medium',
+        videoMode === 'quality' 
+          ? 'bg-purple-600 hover:bg-purple-700 text-white' 
+          : 'bg-green-600 hover:bg-green-700 text-white'
+      ]"
+      :title="videoMode === 'quality' ? '当前：4K清晰模式（点击切换到流畅模式）' : '当前：流畅模式（点击切换到4K清晰模式）'"
+    >
+      <span class="text-lg">{{ videoMode === 'quality' ? '🔒' : '🚀' }}</span>
+      <span class="hidden sm:inline">{{ videoMode === 'quality' ? '4K' : '流畅' }}</span>
     </button>
 
     <!-- 设置按钮 -->

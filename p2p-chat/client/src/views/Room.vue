@@ -32,6 +32,7 @@ const {
   isAudioEnabled, 
   isVideoEnabled,
   currentFacingMode, // 🔑 获取当前摄像头朝向
+  videoMode,         // 🎬 视频模式
   startMedia, 
   stopMedia, 
   toggleAudio, 
@@ -39,6 +40,7 @@ const {
   applyVideoConstraints,
   switchCamera,
   setFacingMode, // 🔑 设置摄像头朝向
+  switchVideoMode, // 🎬 切换视频模式
 } = useMediaStream()
 
 // WebRTC + DataChannel
@@ -184,6 +186,22 @@ const handleSwitchCamera = async () => {
   }
 }
 
+// 🎬 切换视频模式（4K清晰 / 流畅）
+const handleSwitchVideoMode = async () => {
+  const newMode = videoMode.value === 'quality' ? 'smooth' : 'quality'
+  console.log(`🎬 Switching video mode to: ${newMode}`)
+  
+  // 1. 切换媒体流的视频约束
+  const success = await switchVideoMode()
+  if (success) {
+    // 2. 同步更新 WebRTC 的分辨率保持策略
+    await setMaintainResolution(newMode === 'quality')
+    // 3. 更新所有 Peer 的媒体轨道
+    await updateAllPeerTracks()
+    console.log(`🎬 Video mode switched to: ${newMode}`)
+  }
+}
+
 // 应用摄像头设置
 const handleApplyCameraSettings = async (constraints: MediaTrackConstraints, facingMode: 'user' | 'environment') => {
   // 🔑 同步更新 facingMode
@@ -292,9 +310,11 @@ onUnmounted(() => {
       :is-audio-enabled="isAudioEnabled"
       :is-video-enabled="isVideoEnabled"
       :is-mobile="isMobile"
+      :video-mode="videoMode"
       @toggle-audio="handleToggleAudio"
       @toggle-video="handleToggleVideo"
       @switch-camera="handleSwitchCamera"
+      @switch-video-mode="handleSwitchVideoMode"
       @open-settings="openCameraSettings"
       @leave-room="leaveRoom"
     />
