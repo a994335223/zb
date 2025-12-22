@@ -1,10 +1,10 @@
 import { ref, computed, onUnmounted } from 'vue'
 
-// 默认视频约束 - 限制最大1080p，优先720p
+// 默认视频约束 - 支持4K高清，不限制最大分辨率
 const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
-  width: { ideal: 1280, max: 1920 },
-  height: { ideal: 720, max: 1080 },
-  frameRate: { ideal: 30, min: 15 },
+  width: { ideal: 3840 },    // 4K
+  height: { ideal: 2160 },   // 4K
+  frameRate: { ideal: 30 },
   facingMode: 'user',
 }
 
@@ -56,13 +56,13 @@ export function useMediaStream() {
       // 记录实际获取到的设置，并设置 contentHint
       const videoTrack = mediaStream.getVideoTracks()[0]
       if (videoTrack) {
-        // 🔑 关键：设置 contentHint 为 'motion'，优先保持流畅度
+        // 🔑 关键：设置 contentHint 为 'detail'，优先保持4K清晰度
         // 'motion' = 优先流畅（带宽不足时降分辨率，保持帧率）
-        // 'detail' = 优先清晰（带宽不足时降帧率，保持分辨率）
+        // 'detail' = 优先清晰（带宽不足时降帧率，保持分辨率）- 适合4K推流
         // 'text' = 适合屏幕共享
         if ('contentHint' in videoTrack) {
-          (videoTrack as any).contentHint = 'motion'
-          console.log('🎬 Set contentHint = motion (prioritize smoothness)')
+          (videoTrack as any).contentHint = 'detail'
+          console.log('🔒 Set contentHint = detail (prioritize 4K resolution)')
         }
         
         const settings = videoTrack.getSettings()
@@ -103,10 +103,10 @@ export function useMediaStream() {
         const newVideoTrack = newVideoStream.getVideoTracks()[0]
         console.log('📷 New video track:', newVideoTrack.id.slice(0, 8), newVideoTrack.label)
         
-        // 🔑 设置 contentHint 为 'motion'
+        // 🔑 设置 contentHint 为 'detail'
         if ('contentHint' in newVideoTrack) {
-          (newVideoTrack as any).contentHint = 'motion'
-          console.log('🎬 Set contentHint = motion')
+          (newVideoTrack as any).contentHint = 'detail'
+          console.log('🔒 Set contentHint = detail')
         }
         
         // 先移除旧轨道，再添加新轨道
