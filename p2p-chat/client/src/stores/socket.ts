@@ -1,12 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { io, Socket } from 'socket.io-client'
-
-// 动态获取 Socket URL（每次调用时计算，而不是模块加载时）
-const getSocketUrl = () => {
-  const host = window.location.hostname || 'localhost'
-  return `http://${host}:3001`
-}
+import { SOCKET_URL } from '@/config/ice'
 
 export const useSocketStore = defineStore('socket', () => {
   // 状态
@@ -24,8 +19,8 @@ export const useSocketStore = defineStore('socket', () => {
   const connect = () => {
     if (socket.value?.connected) return
 
-    // 每次连接时动态获取 URL
-    socketUrl.value = getSocketUrl()
+    // 使用配置的 Socket URL
+    socketUrl.value = SOCKET_URL
     console.log('🔌 Connecting to:', socketUrl.value)
     
     socket.value = io(socketUrl.value, {

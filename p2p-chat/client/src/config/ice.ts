@@ -28,11 +28,10 @@ const getSocketUrl = () => {
     return import.meta.env.VITE_SOCKET_URL
   }
   
-  // 🔑 生产环境：使用相对路径（Nginx 反向代理）
+  // 🔑 生产环境：使用当前页面的协议和主机（通过 Nginx 反向代理）
   if (import.meta.env.PROD) {
-    // 生产环境通过 Nginx 反向代理，使用当前协议
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}`
+    // Socket.io 需要使用 http/https 协议，它会自动升级到 WebSocket
+    return `${window.location.protocol}//${window.location.host}`
   }
   
   // 开发环境：使用当前访问的主机地址 + 后端端口
