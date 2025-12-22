@@ -200,6 +200,9 @@ info "    构建后端 (npm install)..."
 npm install >> $LOG_FILE 2>&1
 check_command "后端依赖安装"
 
+# 修复 node_modules/.bin 权限问题
+chmod +x node_modules/.bin/* 2>/dev/null || true
+
 info "    构建后端 (npm run build)..."
 npm run build >> $LOG_FILE 2>&1
 check_command "后端构建"
