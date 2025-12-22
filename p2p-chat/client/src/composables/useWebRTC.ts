@@ -463,28 +463,49 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       }
     }
 
-    // 需要重新协商
+    // 需要重新协商 - 使用防抖避免频繁触发
+    let negotiationTimeout: number | null = null
     pc.onnegotiationneeded = async () => {
-      if (!isOfferer.get(targetId) || isNegotiating.get(targetId)) {
+      // 只有 offerer 才主动发起协商
+      if (!isOfferer.get(targetId)) {
+        console.log(`⏭️ Skipping negotiation (not offerer) for: ${targetId}`)
         return
       }
-
-      console.log(`🔄 Renegotiation needed for: ${targetId}`)
-      isNegotiating.set(targetId, true)
-
-      try {
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        socketStore.socket?.emit('signal', {
-          type: 'offer',
-          to: targetId,
-          roomId,
-          payload: offer,
-        })
-      } catch (err) {
-        console.error('❌ Renegotiation error:', err)
-        isNegotiating.set(targetId, false)
+      
+      // 如果正在协商中，跳过
+      if (isNegotiating.get(targetId)) {
+        console.log(`⏭️ Skipping negotiation (already negotiating) for: ${targetId}`)
+        return
       }
+      
+      // 防抖：等待 100ms 再执行，避免频繁触发
+      if (negotiationTimeout) {
+        clearTimeout(negotiationTimeout)
+      }
+      
+      negotiationTimeout = window.setTimeout(async () => {
+        if (pc.signalingState !== 'stable') {
+          console.log(`⏭️ Skipping negotiation (state: ${pc.signalingState}) for: ${targetId}`)
+          return
+        }
+        
+        console.log(`🔄 Renegotiation needed for: ${targetId}`)
+        isNegotiating.set(targetId, true)
+
+        try {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          socketStore.socket?.emit('signal', {
+            type: 'offer',
+            to: targetId,
+            roomId,
+            payload: offer,
+          })
+        } catch (err) {
+          console.error('❌ Renegotiation error:', err)
+          isNegotiating.set(targetId, false)
+        }
+      }, 100)
     }
 
     // 添加到 peers Map
@@ -598,20 +619,31 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
 
   // 发起呼叫 (创建 Offer)
   const createOffer = async (targetId: string, nickname = '用户'): Promise<void> => {
+    // 检查是否已有连接
+    if (peerConnections.has(targetId)) {
+      console.log(`⚠️ PC already exists for: ${targetId}, skipping createOffer`)
+      return
+    }
+    
     isOfferer.set(targetId, true)
     isNegotiating.set(targetId, true)
     
     const pc = createPeerConnection(targetId, nickname, true) // 🔑 asOfferer = true
     
-    // 添加本地轨道
-    await addLocalTracksToPC(pc, targetId)
-    
-    // 如果没有本地流，添加 recvonly transceiver
-    if (!localStream.value) {
+    // 🔑 先添加 transceivers（保证 m-line 顺序一致）
+    // 无论是否有本地流，都添加 audio 和 video transceiver
+    if (localStream.value) {
+      // 有本地流，添加轨道
+      await addLocalTracksToPC(pc, targetId)
+    } else {
+      // 没有本地流，添加 recvonly transceiver（顺序：audio, video）
       console.log('📡 No local stream, adding recvonly transceivers')
       pc.addTransceiver('audio', { direction: 'recvonly' })
       pc.addTransceiver('video', { direction: 'recvonly' })
     }
+    
+    // 稍微延迟，确保 transceiver 设置完成
+    await new Promise(resolve => setTimeout(resolve, 50))
     
     try {
       const offer = await pc.createOffer()
@@ -630,31 +662,44 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
     }
   }
 
-  // 响应呼叫 (创建 Answer)
+  // 响应呼叫 (创建 Answer) - Perfect Negotiation 模式
   const handleOffer = async (fromId: string, offer: RTCSessionDescriptionInit): Promise<void> => {
     let pc = peerConnections.get(fromId)
     const myId = socketStore.socket?.id || ''
     
+    // 🔑 Perfect Negotiation: 决定谁是 "polite peer"
+    // ID 较小的是 polite peer，会让步
+    const imPolite = myId < fromId
+    
     // 处理 glare（双方同时发 offer）
-    if (pc && isNegotiating.get(fromId) && isOfferer.get(fromId)) {
-      if (myId > fromId) {
-        console.log(`⏭️ Ignoring offer from ${fromId} (glare resolution: my ID is larger)`)
+    if (pc && pc.signalingState !== 'stable') {
+      if (!imPolite) {
+        // 我是 impolite peer，忽略对方的 offer
+        console.log(`⏭️ Ignoring offer from ${fromId} (I'm impolite, my offer takes priority)`)
         return
-      } else {
-        console.log(`🔄 Yielding to ${fromId} (glare resolution: their ID is larger)`)
-        isOfferer.set(fromId, false)
       }
+      
+      // 我是 polite peer，回滚我的 offer，接受对方的
+      console.log(`🔄 Rolling back my offer, accepting offer from ${fromId} (I'm polite)`)
+      try {
+        await pc.setLocalDescription({ type: 'rollback' })
+      } catch (e) {
+        // rollback 可能失败，继续处理
+        console.warn('⚠️ Rollback failed, trying to continue')
+      }
+      isOfferer.set(fromId, false)
+      isNegotiating.set(fromId, false)
     }
     
     if (!pc) {
       isOfferer.set(fromId, false)
-      pc = createPeerConnection(fromId, '用户')
+      pc = createPeerConnection(fromId, '用户', false) // 不是 offerer
     }
 
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer))
       
-      // 添加本地轨道
+      // 添加本地轨道（如果有）
       await addLocalTracksToPC(pc, fromId)
       
       // 创建 answer
@@ -679,16 +724,27 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
   // 处理 Answer
   const handleAnswer = async (fromId: string, answer: RTCSessionDescriptionInit): Promise<void> => {
     const pc = peerConnections.get(fromId)
-    if (pc) {
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer))
-        console.log(`✅ Answer received from: ${fromId}`)
-        
-        // 🔑 关键：在收到 answer 后设置视频参数（SDP 协商完成）
-        await applyVideoParamsAfterNegotiation(fromId)
-      } catch (err) {
-        console.error('❌ Handle answer error:', err)
-      }
+    if (!pc) {
+      console.warn(`⚠️ No PC found for answer from: ${fromId}`)
+      return
+    }
+    
+    // 只有在 have-local-offer 状态下才能接收 answer
+    if (pc.signalingState !== 'have-local-offer') {
+      console.warn(`⚠️ Ignoring answer (state: ${pc.signalingState}) from: ${fromId}`)
+      return
+    }
+    
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer))
+      console.log(`✅ Answer received from: ${fromId}`)
+      isNegotiating.set(fromId, false)
+      
+      // 🔑 关键：在收到 answer 后设置视频参数（SDP 协商完成）
+      await applyVideoParamsAfterNegotiation(fromId)
+    } catch (err) {
+      console.error('❌ Handle answer error:', err)
+      isNegotiating.set(fromId, false)
     }
   }
 
