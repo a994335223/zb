@@ -272,6 +272,126 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
 
   // ========== 📨 DataChannel 功能结束 ==========
 
+  // 🔑 设置编解码器优先级：AV1 > H.265/HEVC > VP9 > VP8
+  const setCodecPreferences = (pc: RTCPeerConnection): void => {
+    try {
+      const transceivers = pc.getTransceivers()
+      
+      for (const transceiver of transceivers) {
+        if (transceiver.receiver.track?.kind === 'video') {
+          // 获取支持的编解码器
+          const codecs = RTCRtpReceiver.getCapabilities('video')?.codecs || []
+          
+          // 定义优先级顺序
+          const codecPriority = [
+            'AV1',      // 最高优先级
+            'H265',     // H.265/HEVC
+            'HEVC',     // HEVC 的另一种表示
+            'VP9',      // VP9
+            'VP8',      // VP8（最低优先级）
+          ]
+          
+          // 按优先级排序编解码器
+          const sortedCodecs = codecs.sort((a, b) => {
+            const aPriority = codecPriority.findIndex(priority => 
+              a.mimeType.toUpperCase().includes(priority)
+            )
+            const bPriority = codecPriority.findIndex(priority => 
+              b.mimeType.toUpperCase().includes(priority)
+            )
+            
+            // 如果都找不到，保持原顺序
+            if (aPriority === -1 && bPriority === -1) return 0
+            if (aPriority === -1) return 1
+            if (bPriority === -1) return -1
+            
+            return aPriority - bPriority
+          })
+          
+          // 设置编解码器偏好
+          if ('setCodecPreferences' in transceiver && sortedCodecs.length > 0) {
+            transceiver.setCodecPreferences(sortedCodecs)
+            console.log('🎬 Codec preferences set:', sortedCodecs.map(c => c.mimeType).join(', '))
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ Failed to set codec preferences:', err)
+    }
+  }
+
+  // 🔑 修改 SDP 以设置编解码器优先级（备用方案）
+  const modifySdpForCodecPriority = (sdp: string): string => {
+    try {
+      // 定义编解码器优先级（按 MIME type）
+      const codecPriority = [
+        { pattern: /AV1/i, priority: 1 },
+        { pattern: /H265|HEVC/i, priority: 2 },
+        { pattern: /VP9/i, priority: 3 },
+        { pattern: /VP8/i, priority: 4 },
+        { pattern: /H264/i, priority: 5 }, // H.264 作为备选
+      ]
+      
+      // 查找 m=video 行
+      const lines = sdp.split('\r\n')
+      let inVideoSection = false
+      let videoPayloadTypes: Array<{ line: string; priority: number; payloadType: string }> = []
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        
+        if (line.startsWith('m=video')) {
+          inVideoSection = true
+          continue
+        }
+        
+        if (inVideoSection && line.startsWith('m=')) {
+          // 进入下一个媒体部分，停止处理
+          break
+        }
+        
+        if (inVideoSection && line.startsWith('a=rtpmap:')) {
+          // 解析 rtpmap 行：a=rtpmap:96 VP9/90000
+          const match = line.match(/a=rtpmap:(\d+)\s+([^\s\/]+)/)
+          if (match) {
+            const payloadType = match[1]
+            const codecName = match[2]
+            
+            // 查找优先级
+            const priorityInfo = codecPriority.find(p => p.pattern.test(codecName))
+            const priority = priorityInfo ? priorityInfo.priority : 999
+            
+            videoPayloadTypes.push({ line, priority, payloadType })
+          }
+        }
+      }
+      
+      // 如果找到了编解码器，按优先级排序
+      if (videoPayloadTypes.length > 0) {
+        videoPayloadTypes.sort((a, b) => a.priority - b.priority)
+        
+        // 重新构建 SDP，将高优先级的编解码器放在前面
+        // 这需要在 m=video 行中重新排序 payload types
+        const videoLineIndex = lines.findIndex(l => l.startsWith('m=video'))
+        if (videoLineIndex !== -1) {
+          const videoLine = lines[videoLineIndex]
+          // m=video 9 UDP/TLS/RTP/SAVPF 96 97 98
+          const match = videoLine.match(/m=video\s+(\d+)\s+([^\s]+)\s+(.+)/)
+          if (match) {
+            const payloadTypes = videoPayloadTypes.map(v => v.payloadType).join(' ')
+            lines[videoLineIndex] = `m=video ${match[1]} ${match[2]} ${payloadTypes}`
+            console.log('🎬 SDP modified for codec priority:', payloadTypes)
+          }
+        }
+      }
+      
+      return lines.join('\r\n')
+    } catch (err) {
+      console.warn('⚠️ Failed to modify SDP for codec priority:', err)
+      return sdp
+    }
+  }
+
   // 🔑 核心：设置 sender 的编码参数，强制保持分辨率
   const applySenderDegradationPreference = async (sender: RTCRtpSender): Promise<void> => {
     if (!sender.track || sender.track.kind !== 'video') return
@@ -493,7 +613,16 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
         isNegotiating.set(targetId, true)
 
         try {
+          // 🔑 设置编解码器优先级
+          setCodecPreferences(pc)
+          
           const offer = await pc.createOffer()
+          
+          // 🔑 如果 setCodecPreferences 不可用，修改 SDP 作为备用方案
+          if (offer.sdp) {
+            offer.sdp = modifySdpForCodecPriority(offer.sdp)
+          }
+          
           await pc.setLocalDescription(offer)
           socketStore.socket?.emit('signal', {
             type: 'offer',
@@ -593,7 +722,16 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
         isOfferer.set(peerId, true)
         isNegotiating.set(peerId, true)
         try {
+          // 🔑 设置编解码器优先级
+          setCodecPreferences(pc)
+          
           const offer = await pc.createOffer()
+          
+          // 🔑 如果 setCodecPreferences 不可用，修改 SDP 作为备用方案
+          if (offer.sdp) {
+            offer.sdp = modifySdpForCodecPriority(offer.sdp)
+          }
+          
           await pc.setLocalDescription(offer)
           socketStore.socket?.emit('signal', {
             type: 'offer',
@@ -642,11 +780,20 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       pc.addTransceiver('video', { direction: 'recvonly' })
     }
     
+    // 🔑 设置编解码器优先级：AV1 > H.265/HEVC > VP9 > VP8
+    setCodecPreferences(pc)
+    
     // 稍微延迟，确保 transceiver 设置完成
     await new Promise(resolve => setTimeout(resolve, 50))
     
     try {
       const offer = await pc.createOffer()
+      
+      // 🔑 如果 setCodecPreferences 不可用，修改 SDP 作为备用方案
+      if (offer.sdp) {
+        offer.sdp = modifySdpForCodecPriority(offer.sdp)
+      }
+      
       await pc.setLocalDescription(offer)
       
       socketStore.socket?.emit('signal', {
@@ -702,8 +849,17 @@ export function useWebRTC(roomId: string, localStream: Ref<MediaStream | null>) 
       // 添加本地轨道（如果有）
       await addLocalTracksToPC(pc, fromId)
       
+      // 🔑 设置编解码器优先级：AV1 > H.265/HEVC > VP9 > VP8
+      setCodecPreferences(pc)
+      
       // 创建 answer
       const answer = await pc.createAnswer()
+      
+      // 🔑 如果 setCodecPreferences 不可用，修改 SDP 作为备用方案
+      if (answer.sdp) {
+        answer.sdp = modifySdpForCodecPriority(answer.sdp)
+      }
+      
       await pc.setLocalDescription(answer)
       
       socketStore.socket?.emit('signal', {
